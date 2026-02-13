@@ -20,6 +20,11 @@ const CLANKER_FACTORIES = new Set([
   "0x250c9fb2b411b48273f69879007803790a6aea47", // v0 SocialDexDeployer
 ]);
 
+// Max factory txs to process (avoids rate limiting and timeout)
+const MAX_FACTORY_TXS = 200;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 interface TxListItem {
   hash: string;
   to: string;
@@ -29,14 +34,10 @@ interface TxListItem {
   txreceipt_status: string;
 }
 
-interface InternalTxItem {
-  type: string;
-  contractAddress: string;
-}
-
 /**
  * Step 1: Get transaction hashes where the deployer called a token factory.
- * Also logs the top called contracts for diagnostics (helps identify unknown factories).
+ * Includes rate limiting between pages to avoid 429 errors.
+ * Also logs the top called contracts for diagnostics.
  */
 async function getFactoryTxHashes(deployer: string): Promise<string[]> {
   const factoryHashes: string[] = [];
@@ -47,6 +48,13 @@ async function getFactoryTxHashes(deployer: string): Promise<string[]> {
 
     try {
       const res: Response = await fetch(url, { cache: "no-store" });
+
+      if (res.status === 429) {
+        console.log(`[Discovery] Rate limited on txlist page ${page}, waiting 3s...`);
+        await sleep(3000);
+        continue;
+      }
+
       if (!res.ok) {
         console.error(`[Discovery] txlist error for ${deployer}: HTTP ${res.status}`);
         break;
@@ -65,55 +73,97 @@ async function getFactoryTxHashes(deployer: string): Promise<string[]> {
 
         const toLower = tx.to.toLowerCase();
 
-        // Track all contract calls for diagnostics
         if (tx.input && tx.input.length > 10) {
           contractCallCounts.set(toLower, (contractCallCounts.get(toLower) ?? 0) + 1);
         }
 
-        // Check if this is a call to a known Clanker factory
         if (CLANKER_FACTORIES.has(toLower)) {
           factoryHashes.push(tx.hash);
         }
       }
 
       console.log(`[Discovery] txlist page ${page} for ${deployer.slice(0, 10)}...: ${data.result.length} txs, ${factoryHashes.length} factory calls`);
+
+      // Stop early if we have enough
+      if (factoryHashes.length >= MAX_FACTORY_TXS) {
+        console.log(`[Discovery] Reached ${MAX_FACTORY_TXS} factory tx limit, stopping txlist pagination`);
+        break;
+      }
+
       if (data.result.length < 1000) break;
+
+      // Rate limit: wait between pages
+      await sleep(300);
     } catch (err) {
       console.error(`[Discovery] txlist fetch error:`, err);
       break;
     }
   }
 
-  // Log top 5 called contracts for diagnostics — helps identify unknown factories
+  // Log top 5 called contracts for diagnostics
   const topContracts = [...contractCallCounts.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
-  console.log(`[Discovery] ${deployer.slice(0, 10)}... top called contracts: ${topContracts.map(([addr, count]) => `${addr.slice(0, 12)}...(${count}x)`).join(", ")}`);
-  console.log(`[Discovery] ${deployer.slice(0, 10)}... found ${factoryHashes.length} known factory calls`);
+  console.log(`[Discovery] ${deployer.slice(0, 10)}... top contracts: ${topContracts.map(([addr, count]) => `${addr.slice(0, 12)}...(${count}x)`).join(", ")}`);
+  console.log(`[Discovery] ${deployer.slice(0, 10)}... found ${factoryHashes.length} factory calls (capped at ${MAX_FACTORY_TXS})`);
 
-  return factoryHashes;
+  return factoryHashes.slice(0, MAX_FACTORY_TXS);
 }
 
 /**
  * Step 2: For a transaction hash, find the token contract created in its internal transactions.
+ * Retries on 429 with exponential backoff.
  */
-async function getCreatedTokenFromTx(txHash: string): Promise<string | null> {
+async function getCreatedTokenFromTx(
+  txHash: string,
+  logDetail: boolean
+): Promise<string | null> {
   const url = `${BLOCKSCOUT_API}?module=account&action=txlistinternal&txhash=${txHash}`;
 
-  try {
-    const res: Response = await fetch(url, { cache: "no-store" });
-    if (!res.ok) return null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res: Response = await fetch(url, { cache: "no-store" });
 
-    const data = await res.json();
-    if (data.status !== "1" || !Array.isArray(data.result)) return null;
-
-    for (const itx of data.result as InternalTxItem[]) {
-      if ((itx.type === "create" || itx.type === "create2") && itx.contractAddress) {
-        return itx.contractAddress.toLowerCase();
+      if (res.status === 429) {
+        const wait = 2000 * (attempt + 1);
+        if (logDetail) console.log(`[Discovery] txlistinternal 429, waiting ${wait}ms...`);
+        await sleep(wait);
+        continue;
       }
+
+      if (!res.ok) {
+        if (logDetail) console.log(`[Discovery] txlistinternal HTTP ${res.status} for ${txHash.slice(0, 12)}...`);
+        return null;
+      }
+
+      const data = await res.json();
+
+      // Log the first successful response in detail for debugging
+      if (logDetail) {
+        console.log(`[Discovery] FIRST txlistinternal: status=${data.status} message=${data.message} count=${Array.isArray(data.result) ? data.result.length : "N/A"}`);
+        if (Array.isArray(data.result) && data.result.length > 0) {
+          // Log first internal tx to see the actual field names and values
+          const first = data.result[0];
+          console.log(`[Discovery] FIRST internal tx keys: ${Object.keys(first).join(", ")}`);
+          console.log(`[Discovery] FIRST internal tx: type=${first.type} contractAddress=${first.contractAddress} from=${first.from?.slice(0, 12)} to=${first.to?.slice(0, 12)}`);
+        }
+      }
+
+      if (data.status !== "1" || !Array.isArray(data.result)) return null;
+
+      // Look for contract creation — check contractAddress field regardless of type
+      // (Blockscout may use different type names than Etherscan)
+      for (const itx of data.result) {
+        if (itx.contractAddress) {
+          return itx.contractAddress.toLowerCase();
+        }
+      }
+
+      return null;
+    } catch (err) {
+      if (logDetail) console.error(`[Discovery] txlistinternal error:`, err);
+      await sleep(1000);
     }
-  } catch {
-    // Silently skip failed lookups
   }
 
   return null;
@@ -124,15 +174,19 @@ async function getCreatedTokenFromTx(txHash: string): Promise<string | null> {
  *
  * Flow: BNKR deployer calls Clanker factory's deployToken() → factory creates token contract
  * (via internal CREATE/CREATE2 transaction) → we extract the created contract address.
+ *
+ * Rate limited: 200ms between txlist pages, batches of 5 for txlistinternal with 500ms gaps.
  */
 export async function fetchDeployedTokens(): Promise<string[]> {
-  // Step 1: Get factory call tx hashes from both deployers in parallel
-  const txHashArrays = await Promise.all(
-    BANKR_DEPLOYERS.map((d) => getFactoryTxHashes(d))
-  );
+  // Step 1: Get factory call tx hashes from both deployers (sequentially to avoid rate limits)
+  const allHashes: string[] = [];
 
-  const allHashes = txHashArrays.flat();
-  console.log(`[Discovery] Total factory transactions across all deployers: ${allHashes.length}`);
+  for (const deployer of BANKR_DEPLOYERS) {
+    const hashes = await getFactoryTxHashes(deployer);
+    allHashes.push(...hashes);
+  }
+
+  console.log(`[Discovery] Total factory txs to process: ${allHashes.length}`);
 
   if (allHashes.length === 0) {
     console.log(`[Discovery] No factory calls found — check deployer addresses and factory list`);
@@ -140,24 +194,35 @@ export async function fetchDeployedTokens(): Promise<string[]> {
   }
 
   // Step 2: For each factory tx, find the created token contract
-  // Process in batches of 10 to avoid rate limiting
+  // Process in small batches with delays to respect rate limits
   const tokens = new Set<string>();
-  const BATCH_SIZE = 10;
+  const BATCH_SIZE = 5;
+  let firstCall = true;
 
   for (let i = 0; i < allHashes.length; i += BATCH_SIZE) {
     const batch = allHashes.slice(i, i + BATCH_SIZE);
-    const results = await Promise.all(batch.map((h) => getCreatedTokenFromTx(h)));
+    const results = await Promise.all(
+      batch.map((h, idx) => {
+        const shouldLog = firstCall && idx === 0;
+        if (shouldLog) firstCall = false;
+        return getCreatedTokenFromTx(h, shouldLog);
+      })
+    );
 
     for (const addr of results) {
       if (addr) tokens.add(addr);
     }
 
-    if (i % 50 === 0 && i > 0) {
-      console.log(`[Discovery] Processed ${i}/${allHashes.length} txs, found ${tokens.size} tokens so far`);
+    // Log progress periodically
+    if ((i + BATCH_SIZE) % 50 === 0 || i + BATCH_SIZE >= allHashes.length) {
+      console.log(`[Discovery] Processed ${Math.min(i + BATCH_SIZE, allHashes.length)}/${allHashes.length} txs, found ${tokens.size} tokens`);
     }
+
+    // Rate limit: wait between batches
+    await sleep(500);
   }
 
-  console.log(`[Discovery] Found ${tokens.size} unique deployed tokens from ${allHashes.length} factory transactions`);
+  console.log(`[Discovery] Found ${tokens.size} unique deployed tokens from ${allHashes.length} factory txs`);
   return Array.from(tokens);
 }
 
@@ -198,7 +263,6 @@ export async function fetchTokenMarketData(
  * Picks the highest-liquidity pair for each token.
  */
 export function pairsToTokenData(pairs: DexScreenerPair[]): TokenData[] {
-  // Group pairs by base token address
   const tokenMap = new Map<string, DexScreenerPair[]>();
 
   for (const pair of pairs) {
@@ -209,7 +273,6 @@ export function pairsToTokenData(pairs: DexScreenerPair[]): TokenData[] {
     tokenMap.get(addr)!.push(pair);
   }
 
-  // For each token, pick the pair with highest liquidity
   const tokens: TokenData[] = [];
 
   for (const [, tokenPairs] of tokenMap) {
