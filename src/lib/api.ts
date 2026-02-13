@@ -21,9 +21,10 @@ export async function fetchDeployedTokens(): Promise<string[]> {
   const data = await res.json();
 
   if (data.status !== "1" || !Array.isArray(data.result)) {
-    const msg = data.message || data.result || "Unknown error";
-    console.error("[BaseScan] txlist error:", msg, "| API key present:", !!BASESCAN_API_KEY);
-    throw new Error(`BaseScan API error: ${msg}`);
+    // BaseScan returns detail in `result` (e.g. "Invalid API Key") and generic status in `message` ("NOTOK")
+    const detail = typeof data.result === "string" ? data.result : data.message || "Unknown error";
+    console.error("[BaseScan] txlist error:", detail, "| full response:", JSON.stringify(data), "| API key present:", !!BASESCAN_API_KEY);
+    throw new Error(`BaseScan API error: ${detail}`);
   }
 
   console.log(`[BaseScan] txlist returned ${data.result.length} transactions`);
