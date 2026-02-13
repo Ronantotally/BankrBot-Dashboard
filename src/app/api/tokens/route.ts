@@ -4,13 +4,7 @@ import { fetchDeployedTokens, fetchTokenMarketData, pairsToTokenData } from "@/l
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const hasApiKey = !!process.env.BASESCAN_API_KEY;
-
   try {
-    if (!hasApiKey) {
-      console.warn("[tokens] BASESCAN_API_KEY is not set — requests will be rate-limited");
-    }
-
     const addresses = await fetchDeployedTokens();
     console.log(`[tokens] Found ${addresses.length} deployed contracts`);
 
@@ -20,7 +14,6 @@ export async function GET() {
         count: 0,
         deployedContracts: 0,
         lastUpdated: Date.now(),
-        hasApiKey,
       });
     }
 
@@ -36,14 +29,13 @@ export async function GET() {
       count: tokens.length,
       deployedContracts: addresses.length,
       lastUpdated: Date.now(),
-      hasApiKey,
     });
   } catch (error) {
     console.error("[tokens] API route error:", error);
     const message =
       error instanceof Error ? error.message : "Failed to fetch token data";
     return NextResponse.json(
-      { error: message, hasApiKey },
+      { error: message },
       { status: 500 }
     );
   }

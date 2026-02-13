@@ -5,19 +5,16 @@ import { DexScreenerPair, TokenData } from "@/types/token";
 export const BANKR_DEPLOYER = "0x2112b8456AC07c15fA31ddf3Bf713E77716fF3F9";
 
 const DEXSCREENER_BASE = "https://api.dexscreener.com";
-// Etherscan V2 unified API — chainid 8453 = Base
-const ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api";
-const BASE_CHAIN_ID = "8453";
-const BASESCAN_API_KEY = process.env.BASESCAN_API_KEY ?? "";
+// Blockscout API for Base — free, no API key required, etherscan-compatible format
+const BLOCKSCOUT_BASE = "https://base.blockscout.com/api";
 
 /**
  * Fetch token contract creation transactions from the BNKR deployer via BaseScan.
  * Returns a list of contract addresses created by the deployer.
  */
 export async function fetchDeployedTokens(): Promise<string[]> {
-  // Get internal transactions (contract creations) from the deployer
-  const apiKeyParam = BASESCAN_API_KEY ? `&apikey=${BASESCAN_API_KEY}` : "";
-  const url = `${ETHERSCAN_V2_BASE}?chainid=${BASE_CHAIN_ID}&module=account&action=txlist&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc${apiKeyParam}`;
+  // Get transactions from the deployer via Blockscout
+  const url = `${BLOCKSCOUT_BASE}?module=account&action=txlist&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc`;
 
   const res = await fetch(url, { next: { revalidate: 120 } });
   const data = await res.json();
@@ -25,11 +22,11 @@ export async function fetchDeployedTokens(): Promise<string[]> {
   if (data.status !== "1" || !Array.isArray(data.result)) {
     // BaseScan returns detail in `result` (e.g. "Invalid API Key") and generic status in `message` ("NOTOK")
     const detail = typeof data.result === "string" ? data.result : data.message || "Unknown error";
-    console.error("[BaseScan] txlist error:", detail, "| full response:", JSON.stringify(data), "| API key present:", !!BASESCAN_API_KEY);
-    throw new Error(`BaseScan API error: ${detail}`);
+    console.error("[Blockscout] txlist error:", detail, "| full response:", JSON.stringify(data));
+    throw new Error(`Blockscout API error: ${detail}`);
   }
 
-  console.log(`[BaseScan] txlist returned ${data.result.length} transactions`);
+  console.log(`[Blockscout] txlist returned ${data.result.length} transactions`);
 
   // Filter for contract creation transactions (to address is empty)
   // and successful transactions
@@ -39,10 +36,10 @@ export async function fetchDeployedTokens(): Promise<string[]> {
       contractAddresses.push(tx.contractAddress);
     }
   }
-  console.log(`[BaseScan] Found ${contractAddresses.length} direct contract creations`);
+  console.log(`[Blockscout] Found ${contractAddresses.length} direct contract creations`);
 
   // Also try internal txns which capture CREATE/CREATE2 opcodes
-  const internalUrl = `${ETHERSCAN_V2_BASE}?chainid=${BASE_CHAIN_ID}&module=account&action=txlistinternal&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc${apiKeyParam}`;
+  const internalUrl = `${BLOCKSCOUT_BASE}?module=account&action=txlistinternal&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc`;
 
   try {
     const internalRes = await fetch(internalUrl, { next: { revalidate: 120 } });
@@ -63,12 +60,12 @@ export async function fetchDeployedTokens(): Promise<string[]> {
           }
         }
       }
-      console.log(`[BaseScan] Internal txns: ${internalData.result.length} total, ${internalCreates} new contract creations`);
+      console.log(`[Blockscout] Internal txns: ${internalData.result.length} total, ${internalCreates} new contract creations`);
     } else {
-      console.warn("[BaseScan] Internal txns returned no results:", internalData.message || internalData.result);
+      console.warn("[Blockscout] Internal txns returned no results:", internalData.message || internalData.result);
     }
   } catch (err) {
-    console.warn("[BaseScan] Internal txns fetch failed:", err);
+    console.warn("[Blockscout] Internal txns fetch failed:", err);
   }
 
   return contractAddresses;
