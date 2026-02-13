@@ -10,6 +10,9 @@ const DEXSCREENER_BASE = "https://api.dexscreener.com";
 // Blockscout etherscan-compatible API for Base — free, no API key required
 const BLOCKSCOUT_API = "https://base.blockscout.com/api";
 
+// Zero address — token transfers FROM this address are mint events
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
 interface TokenTxItem {
   contractAddress: string;
   from: string;
@@ -17,14 +20,16 @@ interface TokenTxItem {
 }
 
 /**
- * Discover tokens for a deployer by looking at ERC-20 token transfers.
+ * Discover tokens for a deployer by looking at ERC-20 mint events.
  * When a factory creates a token and mints the initial supply to the deployer,
- * it appears as a token transfer event — so we can extract unique token addresses.
+ * the `from` field is the zero address. We only count these mint events
+ * to avoid picking up random transfers, airdrops, LP tokens, etc.
  */
 async function fetchTokensForDeployer(deployer: string): Promise<string[]> {
   const tokens = new Set<string>();
+  const deployerLower = deployer.toLowerCase();
 
-  for (let page = 1; page <= 10; page++) {
+  for (let page = 1; page <= 20; page++) {
     const url = `${BLOCKSCOUT_API}?module=account&action=tokentx&address=${deployer}&page=${page}&offset=1000&sort=desc`;
 
     try {
@@ -43,14 +48,19 @@ async function fetchTokensForDeployer(deployer: string): Promise<string[]> {
       }
 
       for (const tx of data.result as TokenTxItem[]) {
-        if (tx.contractAddress) {
+        // Only include mint events: from=0x0, to=deployer
+        // This captures factory-created tokens where initial supply goes to deployer
+        if (
+          tx.contractAddress &&
+          tx.from.toLowerCase() === ZERO_ADDRESS &&
+          tx.to.toLowerCase() === deployerLower
+        ) {
           tokens.add(tx.contractAddress.toLowerCase());
         }
       }
 
-      console.log(`[Blockscout] tokentx page ${page} for ${deployer.slice(0, 10)}...: ${data.result.length} transfers, ${tokens.size} unique tokens`);
+      console.log(`[Blockscout] tokentx page ${page} for ${deployer.slice(0, 10)}...: ${data.result.length} transfers, ${tokens.size} minted tokens`);
 
-      // If we got fewer than the offset, there are no more pages
       if (data.result.length < 1000) break;
     } catch (err) {
       console.error(`[Blockscout] tokentx fetch error for ${deployer}:`, err);
