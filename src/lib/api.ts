@@ -7,119 +7,80 @@ export const BANKR_DEPLOYERS = [
 ];
 
 const DEXSCREENER_BASE = "https://api.dexscreener.com";
-// Blockscout v2 REST API for Base — free, no API key required
-const BLOCKSCOUT_V2 = "https://base.blockscout.com/api/v2";
+// Blockscout etherscan-compatible API for Base — free, no API key required
+const BLOCKSCOUT_API = "https://base.blockscout.com/api";
 
-interface BlockscoutInternalTx {
-  type: string;
-  created_contract?: {
-    hash: string;
-    name?: string;
-  };
-}
-
-interface BlockscoutInternalTxResponse {
-  items: BlockscoutInternalTx[];
-  next_page_params: Record<string, string> | null;
+interface TokenTxItem {
+  contractAddress: string;
+  from: string;
+  to: string;
 }
 
 /**
- * Fetch contract addresses created via internal transactions for a single deployer.
- * Uses Blockscout v2 REST API which tracks factory-created contracts.
+ * Discover tokens for a deployer by looking at ERC-20 token transfers.
+ * When a factory creates a token and mints the initial supply to the deployer,
+ * it appears as a token transfer event — so we can extract unique token addresses.
  */
-async function fetchContractsForDeployer(deployer: string): Promise<string[]> {
-  const contracts: string[] = [];
-  let nextUrl =
-    `${BLOCKSCOUT_V2}/addresses/${deployer}/internal-transactions?filter=to%7Cfrom`;
+async function fetchTokensForDeployer(deployer: string): Promise<string[]> {
+  const tokens = new Set<string>();
 
-  for (let page = 0; page < 20; page++) {
-    const res: Response = await fetch(nextUrl, { cache: "no-store" });
+  for (let page = 1; page <= 10; page++) {
+    const url = `${BLOCKSCOUT_API}?module=account&action=tokentx&address=${deployer}&page=${page}&offset=1000&sort=desc`;
 
-    if (!res.ok) {
-      console.error(`[Blockscout] Internal txns error for ${deployer}: HTTP ${res.status}`);
-      break;
-    }
+    try {
+      const res: Response = await fetch(url, { cache: "no-store" });
 
-    const data: BlockscoutInternalTxResponse = await res.json();
-
-    for (const tx of data.items) {
-      if (
-        (tx.type === "create" || tx.type === "create2") &&
-        tx.created_contract?.hash
-      ) {
-        contracts.push(tx.created_contract.hash);
+      if (!res.ok) {
+        console.error(`[Blockscout] tokentx error for ${deployer}: HTTP ${res.status}`);
+        break;
       }
-    }
 
-    // Paginate if more results
-    if (data.next_page_params) {
-      const params = new URLSearchParams(data.next_page_params);
-      nextUrl = `${BLOCKSCOUT_V2}/addresses/${deployer}/internal-transactions?${params}`;
-    } else {
+      const data = await res.json();
+
+      if (data.status !== "1" || !Array.isArray(data.result)) {
+        console.log(`[Blockscout] tokentx: ${data.message ?? "no results"} for ${deployer.slice(0, 10)}... (page ${page})`);
+        break;
+      }
+
+      for (const tx of data.result as TokenTxItem[]) {
+        if (tx.contractAddress) {
+          tokens.add(tx.contractAddress.toLowerCase());
+        }
+      }
+
+      console.log(`[Blockscout] tokentx page ${page} for ${deployer.slice(0, 10)}...: ${data.result.length} transfers, ${tokens.size} unique tokens`);
+
+      // If we got fewer than the offset, there are no more pages
+      if (data.result.length < 1000) break;
+    } catch (err) {
+      console.error(`[Blockscout] tokentx fetch error for ${deployer}:`, err);
       break;
     }
   }
 
-  console.log(`[Blockscout] ${deployer.slice(0, 10)}...: ${contracts.length} contracts from internal txns`);
-  return contracts;
+  return Array.from(tokens);
 }
 
 /**
- * Also check regular transactions for direct contract creations.
- */
-async function fetchDirectCreations(deployer: string): Promise<string[]> {
-  const contracts: string[] = [];
-  let nextUrl =
-    `${BLOCKSCOUT_V2}/addresses/${deployer}/transactions?filter=to%7Cfrom`;
-
-  for (let page = 0; page < 20; page++) {
-    const res: Response = await fetch(nextUrl, { cache: "no-store" });
-
-    if (!res.ok) break;
-
-    const data = await res.json();
-
-    for (const tx of data.items ?? []) {
-      if (tx.created_contract?.hash) {
-        contracts.push(tx.created_contract.hash);
-      }
-    }
-
-    if (data.next_page_params) {
-      const params = new URLSearchParams(data.next_page_params);
-      nextUrl = `${BLOCKSCOUT_V2}/addresses/${deployer}/transactions?${params}`;
-    } else {
-      break;
-    }
-  }
-
-  console.log(`[Blockscout] ${deployer.slice(0, 10)}...: ${contracts.length} contracts from direct txns`);
-  return contracts;
-}
-
-/**
- * Fetch all contract addresses deployed by BNKR deployers.
- * Checks both direct contract creations and factory-pattern (internal) creations.
+ * Fetch all token addresses associated with BNKR deployers.
+ * Uses ERC-20 transfer history to discover tokens — this works with factory-deployed
+ * tokens since the initial mint is a transfer event to the deployer.
  */
 export async function fetchDeployedTokens(): Promise<string[]> {
-  const allContracts = new Set<string>();
+  const allTokens = new Set<string>();
 
-  // Fetch from all deployer addresses in parallel
   const results = await Promise.all(
-    BANKR_DEPLOYERS.flatMap((deployer) => [
-      fetchContractsForDeployer(deployer),
-      fetchDirectCreations(deployer),
-    ])
+    BANKR_DEPLOYERS.map((deployer) => fetchTokensForDeployer(deployer))
   );
 
-  for (const contracts of results) {
-    for (const addr of contracts) {
-      allContracts.add(addr.toLowerCase());
+  for (const tokens of results) {
+    for (const addr of tokens) {
+      allTokens.add(addr);
     }
   }
 
-  console.log(`[Blockscout] Total unique contracts: ${allContracts.size}`);
-  return Array.from(allContracts);
+  console.log(`[Blockscout] Total unique token addresses: ${allTokens.size}`);
+  return Array.from(allTokens);
 }
 
 /**
