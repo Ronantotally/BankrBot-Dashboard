@@ -5,7 +5,9 @@ import { DexScreenerPair, TokenData } from "@/types/token";
 export const BANKR_DEPLOYER = "0x2112b8456AC07c15fA31ddf3Bf713E77716fF3F9";
 
 const DEXSCREENER_BASE = "https://api.dexscreener.com";
-const BASESCAN_BASE = "https://api.basescan.org/api";
+// Etherscan V2 unified API — chainid 8453 = Base
+const ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api";
+const BASE_CHAIN_ID = "8453";
 const BASESCAN_API_KEY = process.env.BASESCAN_API_KEY ?? "";
 
 /**
@@ -15,7 +17,7 @@ const BASESCAN_API_KEY = process.env.BASESCAN_API_KEY ?? "";
 export async function fetchDeployedTokens(): Promise<string[]> {
   // Get internal transactions (contract creations) from the deployer
   const apiKeyParam = BASESCAN_API_KEY ? `&apikey=${BASESCAN_API_KEY}` : "";
-  const url = `${BASESCAN_BASE}?module=account&action=txlist&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc${apiKeyParam}`;
+  const url = `${ETHERSCAN_V2_BASE}?chainid=${BASE_CHAIN_ID}&module=account&action=txlist&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc${apiKeyParam}`;
 
   const res = await fetch(url, { next: { revalidate: 120 } });
   const data = await res.json();
@@ -40,7 +42,7 @@ export async function fetchDeployedTokens(): Promise<string[]> {
   console.log(`[BaseScan] Found ${contractAddresses.length} direct contract creations`);
 
   // Also try internal txns which capture CREATE/CREATE2 opcodes
-  const internalUrl = `${BASESCAN_BASE}?module=account&action=txlistinternal&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc${apiKeyParam}`;
+  const internalUrl = `${ETHERSCAN_V2_BASE}?chainid=${BASE_CHAIN_ID}&module=account&action=txlistinternal&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc${apiKeyParam}`;
 
   try {
     const internalRes = await fetch(internalUrl, { next: { revalidate: 120 } });
