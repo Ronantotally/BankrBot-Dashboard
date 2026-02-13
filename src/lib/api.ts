@@ -10,13 +10,14 @@ const DEXSCREENER_BASE = "https://api.dexscreener.com";
 const BLOCKSCOUT_API = "https://base.blockscout.com/api";
 const CLANKER_API = "https://www.clanker.world/api";
 
-// Known Clanker factory contract addresses on Base (all versions)
-const CLANKER_FACTORIES = new Set([
+// Known token factory contract addresses on Base
+const KNOWN_FACTORIES = new Set([
+  "0xf0b5141dd9096254b2ca624dff26024f46087229", // BNKR factory
   "0xe85a59c628f7d27878aceb4bf3b35733630083a9", // Clanker v4.0.0
-  "0x375c15db32d28cecdcab5c03ab889bf15cbd2c5e", // v3
-  "0x732560fa1d1a76350b1a500155ba978031b53833", // v2
-  "0x9b84fce5dcd9a38d2d01d5d72373f6b6b067c3e1", // v1
-  "0x250c9fb2b411b48273f69879007803790a6aea47", // v0 SocialDexDeployer
+  "0x375c15db32d28cecdcab5c03ab889bf15cbd2c5e", // Clanker v3
+  "0x732560fa1d1a76350b1a500155ba978031b53833", // Clanker v2
+  "0x9b84fce5dcd9a38d2d01d5d72373f6b6b067c3e1", // Clanker v1
+  "0x250c9fb2b411b48273f69879007803790a6aea47", // Clanker v0 SocialDexDeployer
 ]);
 
 const MAX_FACTORY_TXS = 200;
@@ -247,7 +248,7 @@ async function fetchTokensOnChain(deployer: string): Promise<string[]> {
   );
 
   // Phase 3: Dynamic factory discovery — probe top contracts
-  const discoveredFactories = new Set<string>([...CLANKER_FACTORIES]);
+  const discoveredFactories = new Set<string>([...KNOWN_FACTORIES]);
 
   for (const [contractAddr, txs] of topContracts.slice(0, 5)) {
     if (discoveredFactories.has(contractAddr)) {
