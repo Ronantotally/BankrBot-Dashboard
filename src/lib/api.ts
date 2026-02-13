@@ -6,6 +6,7 @@ export const BANKR_DEPLOYER = "0x2112b8456AC07c15fA31ddf3Bf713E77716fF3F9";
 
 const DEXSCREENER_BASE = "https://api.dexscreener.com";
 const BASESCAN_BASE = "https://api.basescan.org/api";
+const BASESCAN_API_KEY = process.env.BASESCAN_API_KEY ?? "";
 
 /**
  * Fetch token contract creation transactions from the BNKR deployer via BaseScan.
@@ -13,14 +14,16 @@ const BASESCAN_BASE = "https://api.basescan.org/api";
  */
 export async function fetchDeployedTokens(): Promise<string[]> {
   // Get internal transactions (contract creations) from the deployer
-  const url = `${BASESCAN_BASE}?module=account&action=txlist&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc`;
+  const apiKeyParam = BASESCAN_API_KEY ? `&apikey=${BASESCAN_API_KEY}` : "";
+  const url = `${BASESCAN_BASE}?module=account&action=txlist&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc${apiKeyParam}`;
 
   const res = await fetch(url, { next: { revalidate: 120 } });
   const data = await res.json();
 
   if (data.status !== "1" || !Array.isArray(data.result)) {
-    console.error("BaseScan API error:", data.message);
-    return [];
+    const msg = data.message || data.result || "Unknown error";
+    console.error("BaseScan API error:", msg);
+    throw new Error(`BaseScan API error: ${msg}`);
   }
 
   // Filter for contract creation transactions (to address is empty)
@@ -33,7 +36,7 @@ export async function fetchDeployedTokens(): Promise<string[]> {
   }
 
   // Also try internal txns which capture CREATE/CREATE2 opcodes
-  const internalUrl = `${BASESCAN_BASE}?module=account&action=txlistinternal&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc`;
+  const internalUrl = `${BASESCAN_BASE}?module=account&action=txlistinternal&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc${apiKeyParam}`;
 
   try {
     const internalRes = await fetch(internalUrl, { next: { revalidate: 120 } });

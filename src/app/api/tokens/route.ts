@@ -25,9 +25,8 @@ export async function GET() {
     });
   } catch (error) {
     console.error("API route error:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch token data" },
-      { status: 500 }
-    );
+    const message =
+      error instanceof Error ? error.message : "Failed to fetch token data";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
