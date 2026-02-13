@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { fetchDeployedTokens, fetchTokenMarketData, pairsToTokenData } from "@/lib/api";
 
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   const hasApiKey = !!process.env.BASESCAN_API_KEY;
