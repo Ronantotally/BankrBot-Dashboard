@@ -22,9 +22,11 @@ export async function fetchDeployedTokens(): Promise<string[]> {
 
   if (data.status !== "1" || !Array.isArray(data.result)) {
     const msg = data.message || data.result || "Unknown error";
-    console.error("BaseScan API error:", msg);
+    console.error("[BaseScan] txlist error:", msg, "| API key present:", !!BASESCAN_API_KEY);
     throw new Error(`BaseScan API error: ${msg}`);
   }
+
+  console.log(`[BaseScan] txlist returned ${data.result.length} transactions`);
 
   // Filter for contract creation transactions (to address is empty)
   // and successful transactions
@@ -34,6 +36,7 @@ export async function fetchDeployedTokens(): Promise<string[]> {
       contractAddresses.push(tx.contractAddress);
     }
   }
+  console.log(`[BaseScan] Found ${contractAddresses.length} direct contract creations`);
 
   // Also try internal txns which capture CREATE/CREATE2 opcodes
   const internalUrl = `${BASESCAN_BASE}?module=account&action=txlistinternal&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc${apiKeyParam}`;
@@ -43,6 +46,7 @@ export async function fetchDeployedTokens(): Promise<string[]> {
     const internalData = await internalRes.json();
 
     if (internalData.status === "1" && Array.isArray(internalData.result)) {
+      let internalCreates = 0;
       for (const tx of internalData.result) {
         if (
           tx.type === "create" ||
@@ -52,12 +56,16 @@ export async function fetchDeployedTokens(): Promise<string[]> {
           const addr = tx.contractAddress;
           if (addr && !contractAddresses.includes(addr)) {
             contractAddresses.push(addr);
+            internalCreates++;
           }
         }
       }
+      console.log(`[BaseScan] Internal txns: ${internalData.result.length} total, ${internalCreates} new contract creations`);
+    } else {
+      console.warn("[BaseScan] Internal txns returned no results:", internalData.message || internalData.result);
     }
-  } catch {
-    // Internal txns endpoint may fail, continue with what we have
+  } catch (err) {
+    console.warn("[BaseScan] Internal txns fetch failed:", err);
   }
 
   return contractAddresses;

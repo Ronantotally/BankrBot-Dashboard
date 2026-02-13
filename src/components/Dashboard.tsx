@@ -10,6 +10,8 @@ interface ApiResponse {
   count: number;
   deployedContracts: number;
   lastUpdated: number;
+  hasApiKey?: boolean;
+  error?: string;
 }
 
 export default function Dashboard() {
@@ -27,9 +29,12 @@ export default function Dashboard() {
 
     try {
       const res = await fetch("/api/tokens");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
       const data: ApiResponse = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
       setTokens(data.tokens);
       setLastUpdated(data.lastUpdated);
     } catch (err) {
