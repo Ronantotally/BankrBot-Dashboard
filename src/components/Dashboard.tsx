@@ -132,7 +132,7 @@ export default function Dashboard() {
       {/* Footer */}
       <footer className="border-t border-zinc-800 py-4 mt-8">
         <div className="max-w-[1400px] mx-auto px-4 sm:px-6 text-center text-xs text-zinc-600">
-          Data from BaseScan & DEX Screener. Deployer:{" "}
+          Data from Blockscout & DEX Screener. Deployers:{" "}
           <a
             href="https://basescan.org/address/0x2112b8456AC07c15fA31ddf3Bf713E77716fF3F9"
             target="_blank"
@@ -140,6 +140,15 @@ export default function Dashboard() {
             className="text-zinc-500 hover:text-zinc-300 font-mono"
           >
             0x2112...F3F9
+          </a>
+          {" | "}
+          <a
+            href="https://basescan.org/address/0xdb034A1485dA0300175B07282F5a84AF69C2493e"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-zinc-500 hover:text-zinc-300 font-mono"
+          >
+            0xdb03...93e
           </a>
         </div>
       </footer>

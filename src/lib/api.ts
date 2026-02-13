@@ -1,74 +1,125 @@
 import { DexScreenerPair, TokenData } from "@/types/token";
 
-// BNKR bot deployer address on Base
-// Update this if the deployer address changes
-export const BANKR_DEPLOYER = "0x2112b8456AC07c15fA31ddf3Bf713E77716fF3F9";
+// BNKR bot deployer addresses on Base
+export const BANKR_DEPLOYERS = [
+  "0x2112b8456AC07c15fA31ddf3Bf713E77716fF3F9",
+  "0xdb034A1485dA0300175B07282F5a84AF69C2493e",
+];
 
 const DEXSCREENER_BASE = "https://api.dexscreener.com";
-// Blockscout API for Base — free, no API key required, etherscan-compatible format
-const BLOCKSCOUT_BASE = "https://base.blockscout.com/api";
+// Blockscout v2 REST API for Base — free, no API key required
+const BLOCKSCOUT_V2 = "https://base.blockscout.com/api/v2";
+
+interface BlockscoutInternalTx {
+  type: string;
+  created_contract?: {
+    hash: string;
+    name?: string;
+  };
+}
+
+interface BlockscoutInternalTxResponse {
+  items: BlockscoutInternalTx[];
+  next_page_params: Record<string, string> | null;
+}
 
 /**
- * Fetch token contract creation transactions from the BNKR deployer via BaseScan.
- * Returns a list of contract addresses created by the deployer.
+ * Fetch contract addresses created via internal transactions for a single deployer.
+ * Uses Blockscout v2 REST API which tracks factory-created contracts.
+ */
+async function fetchContractsForDeployer(deployer: string): Promise<string[]> {
+  const contracts: string[] = [];
+  let nextUrl =
+    `${BLOCKSCOUT_V2}/addresses/${deployer}/internal-transactions?filter=to%7Cfrom`;
+
+  for (let page = 0; page < 20; page++) {
+    const res: Response = await fetch(nextUrl, { cache: "no-store" });
+
+    if (!res.ok) {
+      console.error(`[Blockscout] Internal txns error for ${deployer}: HTTP ${res.status}`);
+      break;
+    }
+
+    const data: BlockscoutInternalTxResponse = await res.json();
+
+    for (const tx of data.items) {
+      if (
+        (tx.type === "create" || tx.type === "create2") &&
+        tx.created_contract?.hash
+      ) {
+        contracts.push(tx.created_contract.hash);
+      }
+    }
+
+    // Paginate if more results
+    if (data.next_page_params) {
+      const params = new URLSearchParams(data.next_page_params);
+      nextUrl = `${BLOCKSCOUT_V2}/addresses/${deployer}/internal-transactions?${params}`;
+    } else {
+      break;
+    }
+  }
+
+  console.log(`[Blockscout] ${deployer.slice(0, 10)}...: ${contracts.length} contracts from internal txns`);
+  return contracts;
+}
+
+/**
+ * Also check regular transactions for direct contract creations.
+ */
+async function fetchDirectCreations(deployer: string): Promise<string[]> {
+  const contracts: string[] = [];
+  let nextUrl =
+    `${BLOCKSCOUT_V2}/addresses/${deployer}/transactions?filter=to%7Cfrom`;
+
+  for (let page = 0; page < 20; page++) {
+    const res: Response = await fetch(nextUrl, { cache: "no-store" });
+
+    if (!res.ok) break;
+
+    const data = await res.json();
+
+    for (const tx of data.items ?? []) {
+      if (tx.created_contract?.hash) {
+        contracts.push(tx.created_contract.hash);
+      }
+    }
+
+    if (data.next_page_params) {
+      const params = new URLSearchParams(data.next_page_params);
+      nextUrl = `${BLOCKSCOUT_V2}/addresses/${deployer}/transactions?${params}`;
+    } else {
+      break;
+    }
+  }
+
+  console.log(`[Blockscout] ${deployer.slice(0, 10)}...: ${contracts.length} contracts from direct txns`);
+  return contracts;
+}
+
+/**
+ * Fetch all contract addresses deployed by BNKR deployers.
+ * Checks both direct contract creations and factory-pattern (internal) creations.
  */
 export async function fetchDeployedTokens(): Promise<string[]> {
-  // Get transactions from the deployer via Blockscout
-  const url = `${BLOCKSCOUT_BASE}?module=account&action=txlist&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc`;
+  const allContracts = new Set<string>();
 
-  const res = await fetch(url, { next: { revalidate: 120 } });
-  const data = await res.json();
+  // Fetch from all deployer addresses in parallel
+  const results = await Promise.all(
+    BANKR_DEPLOYERS.flatMap((deployer) => [
+      fetchContractsForDeployer(deployer),
+      fetchDirectCreations(deployer),
+    ])
+  );
 
-  if (data.status !== "1" || !Array.isArray(data.result)) {
-    // BaseScan returns detail in `result` (e.g. "Invalid API Key") and generic status in `message` ("NOTOK")
-    const detail = typeof data.result === "string" ? data.result : data.message || "Unknown error";
-    console.error("[Blockscout] txlist error:", detail, "| full response:", JSON.stringify(data));
-    throw new Error(`Blockscout API error: ${detail}`);
-  }
-
-  console.log(`[Blockscout] txlist returned ${data.result.length} transactions`);
-
-  // Filter for contract creation transactions (to address is empty)
-  // and successful transactions
-  const contractAddresses: string[] = [];
-  for (const tx of data.result) {
-    if (tx.isError === "0" && tx.contractAddress && tx.contractAddress !== "") {
-      contractAddresses.push(tx.contractAddress);
+  for (const contracts of results) {
+    for (const addr of contracts) {
+      allContracts.add(addr.toLowerCase());
     }
   }
-  console.log(`[Blockscout] Found ${contractAddresses.length} direct contract creations`);
 
-  // Also try internal txns which capture CREATE/CREATE2 opcodes
-  const internalUrl = `${BLOCKSCOUT_BASE}?module=account&action=txlistinternal&address=${BANKR_DEPLOYER}&startblock=0&endblock=99999999&sort=desc`;
-
-  try {
-    const internalRes = await fetch(internalUrl, { next: { revalidate: 120 } });
-    const internalData = await internalRes.json();
-
-    if (internalData.status === "1" && Array.isArray(internalData.result)) {
-      let internalCreates = 0;
-      for (const tx of internalData.result) {
-        if (
-          tx.type === "create" ||
-          tx.type === "create2" ||
-          (tx.contractAddress && tx.contractAddress !== "")
-        ) {
-          const addr = tx.contractAddress;
-          if (addr && !contractAddresses.includes(addr)) {
-            contractAddresses.push(addr);
-            internalCreates++;
-          }
-        }
-      }
-      console.log(`[Blockscout] Internal txns: ${internalData.result.length} total, ${internalCreates} new contract creations`);
-    } else {
-      console.warn("[Blockscout] Internal txns returned no results:", internalData.message || internalData.result);
-    }
-  } catch (err) {
-    console.warn("[Blockscout] Internal txns fetch failed:", err);
-  }
-
-  return contractAddresses;
+  console.log(`[Blockscout] Total unique contracts: ${allContracts.size}`);
+  return Array.from(allContracts);
 }
 
 /**
